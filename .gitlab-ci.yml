@@ -1,0 +1,120 @@
+# Selecionando a imagem de build
+image: docker:stable
+
+# Setando steps de execução
+
+stages:
+- pre-build
+- build
+- test
+- deploy
+- notification
+  
+# PRÉ-BUILS do projetos
+build-docker:
+  # Setando os serviços necessários OBS.: O services e o before_script pode ser feito antes de
+  # iniciar o build, porém será executado a cada novo build.
+  services:
+    - docker:dind
+  retry: 2
+   
+  # Paramentros e configs necessárias antes da execução do script
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD
+  
+  stage: pre-build
+  tags:
+    - docker
+  script:
+  - docker build -t pipeline-py-sql .
+  - docker tag pipeline-py-sql romulomteixeira/imagens_diversas:latest
+  - docker push romulomteixeira/imagens_diversas:latest
+
+# BUILD DO PROJETO
+
+build-project:
+  services:
+  - docker:dind
+  - mysql:5.7
+  variables:
+    MYSQL_USER: $DB_USER
+    MYSQL_PASSWORD: $DB_PASS
+    MYSQL_DATABASE: $DB_DATABASE
+    MYSQL_ROOT_PASSWORD: $DB_ROOT_PASS
+
+    DB_NAME: $DB_DATABASE
+    DB_USER: $DB_USER
+    DB_PASSWORD: $DB_PASS
+    DB_PORT: '3306'
+    DB_HOST: 'mysql'
+    SECRET_KEY: $DB_SECRET_KEY
+
+  stage: build
+  # Caso queira forçar um build a utilizar uma images para as permissões root ou depentências,
+  # basta setar a imagem que será utilizada.
+  image: romulomteixeira/imagens_diversas:latest
+  tags:
+    - exec-aws-docker
+  dependencies:
+  - build-docker
+  script:
+  - python manage.py makemigrations
+  - python manage.py migrate
+
+# TESTES DO PROJETOS
+test-project:
+  image: romulomteixeira/imagens_diversas:latest
+  stage: test
+  services:
+  - docker:dind
+  - mysql:5.7
+  variables:
+      MYSQL_USER: $DB_USER
+      MYSQL_PASSWORD: $DB_PASSWORD
+      MYSQL_DATABASE: $DB_DATABASE
+      MYSQL_ROOT_PASSWORD: $DB_ROOT_PASSWORD
+
+      DB_NAME: $DB_DATABASE
+      DB USER: $DB_USER
+      DB_PASSWORD: $DB_PASSWORD
+      DB_PORT: '3306'
+      DB_HOST: 'mysql'
+      SECRET_KEY: $DB_SECRET_KEY
+      
+  dependencies: 
+  - build-project
+  tags:
+  - exec-aws-docker
+  script:
+  - python -m unittest setUp
+
+# Etapas de deploy da app
+deploy-project:
+  stage: deploy
+  tags:
+    - exec-aws-shell
+  # dependencies:
+  #   - test-project
+  script:
+    - tar cfz arquivos.tgz *
+    - scp arquivos.tgz ubuntu@54.207.171.193:/home/ubuntu/gitlab-runner/
+    - ssh ubuntu@54.207.171.193 'cd /home/ubuntu/gitlab-runner; tar xfz arquivos.tgz; sudo docker-compose up -d'
+
+# NOTIFICATION AREA
+notificacao-sucesso:
+  stage: notification
+  tags:
+  - exec-aws-shell
+  when: on_success
+  script:
+  - chmod +x notificacaoSucesso.sh
+  - sh notificacaoSucesso.sh
+
+notificacao-erro:
+  stage: notification
+  tags:
+  - exec-aws-shell
+  when: on_failure
+  script:
+  - chmod +x notificacaoFalha.sh
+  - sh notificacaoFalha.sh
